@@ -171,6 +171,36 @@ namespace Plank {
     return (type == session_type);
   }
 
+  public static bool environment_supports_window_manager_integration () {
+    return !environment_is_session_type (XdgSessionType.WAYLAND);
+  }
+
+  public static bool environment_supports_workspace_tracking () {
+    return environment_supports_window_manager_integration ();
+  }
+
+  public static bool environment_supports_pointer_barriers () {
+#if HAVE_BARRIERS
+    return environment_supports_window_manager_integration ();
+#else
+    return false;
+#endif
+  }
+
+  public static bool environment_supports_hover_popups () {
+    return !environment_is_session_type (XdgSessionType.WAYLAND);
+  }
+
+#if HAVE_GTK_LAYER_SHELL
+  public static bool environment_supports_wayland_layer_shell () {
+    return environment_is_session_type (XdgSessionType.WAYLAND) && GtkLayerShell.is_supported ();
+  }
+#else
+  public static bool environment_supports_wayland_layer_shell () {
+    return false;
+  }
+#endif
+
   public static XdgSessionClass environment_session_class () {
     return session_class;
   }
@@ -231,6 +261,10 @@ namespace Plank {
     result = Environment.get_variable ("XDG_SESSION_TYPE");
     if (result != null)
       return XdgSessionType.from_string (result);
+
+    result = Environment.get_variable ("WAYLAND_DISPLAY");
+    if (result != null && result != "")
+      return XdgSessionType.WAYLAND;
 
     warning ("XDG_SESSION_TYPE not set in this environment!");
 

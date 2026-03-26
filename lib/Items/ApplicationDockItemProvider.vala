@@ -185,8 +185,12 @@ namespace Plank {
     }
 
     protected virtual void app_opened (Bamf.Application app) {
-      // Make sure internal window-list of Wnck is most up to date
-      Wnck.Screen.get_default ().force_update ();
+      if (WindowControl.is_supported ()) {
+        // Make sure internal window-list of Wnck is most up to date
+        unowned Wnck.Screen? screen = Wnck.Screen.get_default ();
+        if (screen != null)
+          screen.force_update ();
+      }
 
       unowned ApplicationDockItem? found = item_for_application (app);
       if (found != null)

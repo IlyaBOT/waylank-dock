@@ -54,6 +54,7 @@ namespace Plank {
     Gee.ArrayList<Gtk.MenuItem>? menu_items;
 
     uint hover_reposition_timer_id = 0U;
+    uint wayland_pointer_poll_timer_id = 0U;
 
     uint long_press_timer_id = 0U;
     bool long_press_active = false;
@@ -66,6 +67,11 @@ namespace Plank {
 
     X.Atom strut_partial_atom = X.None;
     X.Atom strut_atom = X.None;
+    bool wayland_session = false;
+
+#if HAVE_GTK_LAYER_SHELL
+    bool layer_shell_enabled = false;
+#endif
 
     /**
      * Creates a new dock window.
@@ -80,6 +86,7 @@ namespace Plank {
       can_focus = false;
       skip_pager_hint = true;
       skip_taskbar_hint = true;
+      wayland_session = environment_is_session_type (XdgSessionType.WAYLAND);
 
       stick ();
 
@@ -92,6 +99,22 @@ namespace Plank {
                   | Gdk.EventMask.STRUCTURE_MASK);
 
       controller.prefs.notify["HideMode"].connect (set_struts);
+
+#if HAVE_GTK_LAYER_SHELL
+      if (environment_supports_wayland_layer_shell ()) {
+        GtkLayerShell.init_for_window (this);
+        GtkLayerShell.set_namespace (this, "plank");
+        GtkLayerShell.set_layer (this, GtkLayerShell.Layer.TOP);
+        GtkLayerShell.set_keyboard_mode (this, GtkLayerShell.KeyboardMode.NONE);
+        layer_shell_enabled = true;
+      }
+#endif
+
+      if (uses_wayland_positioning ()) {
+        wayland_pointer_poll_timer_id = Gdk.threads_add_timeout (33, () => {
+          return poll_wayland_pointer ();
+        });
+      }
     }
 
     ~DockWindow () {
@@ -106,7 +129,99 @@ namespace Plank {
         GLib.Source.remove (hover_reposition_timer_id);
         hover_reposition_timer_id = 0U;
       }
+
+      if (wayland_pointer_poll_timer_id > 0U) {
+        GLib.Source.remove (wayland_pointer_poll_timer_id);
+        wayland_pointer_poll_timer_id = 0U;
+      }
     }
+
+    bool uses_wayland_positioning () {
+      return wayland_session;
+    }
+
+#if HAVE_GTK_LAYER_SHELL
+    bool uses_wayland_layer_shell () {
+      return layer_shell_enabled;
+    }
+
+    void update_wayland_surface (Gdk.Rectangle win_rect) {
+      if (!uses_wayland_layer_shell ())
+        return;
+
+      unowned Gdk.Monitor? monitor = controller.position_manager.get_target_monitor ();
+      if (monitor == null)
+        return;
+
+      var monitor_geo = controller.position_manager.get_monitor_geometry ();
+      var effective_hide_mode = HideManager.get_effective_hide_mode_for_environment (controller.prefs.HideMode);
+      var exclusive_zone = 0;
+
+      GtkLayerShell.set_monitor (this, monitor);
+      GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.LEFT, false);
+      GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.RIGHT, false);
+      GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.TOP, false);
+      GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.BOTTOM, false);
+      GtkLayerShell.set_margin (this, GtkLayerShell.Edge.LEFT, 0);
+      GtkLayerShell.set_margin (this, GtkLayerShell.Edge.RIGHT, 0);
+      GtkLayerShell.set_margin (this, GtkLayerShell.Edge.TOP, 0);
+      GtkLayerShell.set_margin (this, GtkLayerShell.Edge.BOTTOM, 0);
+
+      switch (controller.position_manager.Position) {
+      default:
+      case Gtk.PositionType.BOTTOM: {
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.LEFT, true);
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.BOTTOM, true);
+        var margin_left = int.max (0, win_rect.x - monitor_geo.x);
+        var margin_bottom = int.max (0, monitor_geo.y + monitor_geo.height - (win_rect.y + win_rect.height));
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.LEFT, margin_left);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.BOTTOM, margin_bottom);
+        if (effective_hide_mode == HideType.NONE)
+          exclusive_zone = win_rect.height + margin_bottom;
+        break;
+      }
+      case Gtk.PositionType.TOP: {
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.LEFT, true);
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.TOP, true);
+        var margin_top_left = int.max (0, win_rect.x - monitor_geo.x);
+        var margin_top = int.max (0, win_rect.y - monitor_geo.y);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.LEFT, margin_top_left);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.TOP, margin_top);
+        if (effective_hide_mode == HideType.NONE)
+          exclusive_zone = win_rect.height + margin_top;
+        break;
+      }
+      case Gtk.PositionType.LEFT: {
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.LEFT, true);
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.TOP, true);
+        var margin_left_edge = int.max (0, win_rect.x - monitor_geo.x);
+        var margin_left_top = int.max (0, win_rect.y - monitor_geo.y);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.LEFT, margin_left_edge);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.TOP, margin_left_top);
+        if (effective_hide_mode == HideType.NONE)
+          exclusive_zone = win_rect.width + margin_left_edge;
+        break;
+      }
+      case Gtk.PositionType.RIGHT: {
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.RIGHT, true);
+        GtkLayerShell.set_anchor (this, GtkLayerShell.Edge.TOP, true);
+        var margin_right = int.max (0, monitor_geo.x + monitor_geo.width - (win_rect.x + win_rect.width));
+        var margin_right_top = int.max (0, win_rect.y - monitor_geo.y);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.RIGHT, margin_right);
+        GtkLayerShell.set_margin (this, GtkLayerShell.Edge.TOP, margin_right_top);
+        if (effective_hide_mode == HideType.NONE)
+          exclusive_zone = win_rect.width + margin_right;
+        break;
+      }
+      }
+
+      GtkLayerShell.set_exclusive_zone (this, exclusive_zone);
+    }
+#else
+    bool uses_wayland_layer_shell () {
+      return false;
+    }
+#endif
 
     /**
      * {@inheritDoc}
@@ -278,8 +393,9 @@ namespace Plank {
      */
     public override bool configure_event (Gdk.EventConfigure event) {
       var win_rect = controller.position_manager.get_dock_window_region ();
-      var needs_update = (win_rect.width != event.width || win_rect.height != event.height
-                          || win_rect.x != event.x || win_rect.y != event.y);
+      var needs_update = (win_rect.width != event.width || win_rect.height != event.height);
+      if (!uses_wayland_positioning ())
+        needs_update = needs_update || win_rect.x != event.x || win_rect.y != event.y;
 
       if (needs_update) {
         // When adjusting the position of the dock, sometimes it needs to
@@ -300,9 +416,67 @@ namespace Plank {
      * {@inheritDoc}
      */
     public override bool draw (Cairo.Context cr) {
+      if (uses_wayland_positioning ())
+        controller.renderer.draw (cr, controller.renderer.frame_time);
+
       set_input_mask ();
 
       return Gdk.EVENT_STOP;
+    }
+
+    bool poll_wayland_pointer () {
+      if (!uses_wayland_positioning ())
+        return false;
+
+      if (!get_realized () || !get_visible ())
+        return true;
+
+      unowned Gdk.Device? pointer = get_display ()
+                                    .get_default_seat ()
+                                    .get_pointer ();
+      if (pointer == null)
+        return true;
+
+      // While the dock is fully visible, native pointer events are much more
+      // stable than timer-driven polling on Wayland. Keep polling for the
+      // hidden/animating states so edge reveal still works.
+      if (!controller.hide_manager.Hidden
+          && controller.renderer.hide_progress <= 0.0
+          && !menu_is_visible ()
+          && !controller.drag_manager.InternalDragActive
+          && !controller.drag_manager.ExternalDragActive)
+        return true;
+
+      if (!controller.hide_manager.Hidden) {
+        unowned Gdk.Window? window = get_window ();
+        if (window == null)
+          return true;
+
+        Gdk.ModifierType mask;
+        int x, y;
+        unowned Gdk.Window? pointer_window = window.get_device_position (pointer, out x, out y, out mask);
+        if (pointer_window == null)
+          return true;
+
+        controller.renderer.update_local_cursor (x, y);
+        controller.hide_manager.update_hovered_with_coords (x, y);
+
+        if (!menu_is_visible () && !controller.drag_manager.InternalDragActive)
+          update_hovered (x, y);
+
+        return true;
+      }
+
+      int x, y;
+      pointer.get_position (null, out x, out y);
+
+      var win_rect = controller.position_manager.get_dock_window_region ();
+      x -= win_rect.x;
+      y -= win_rect.y;
+
+      controller.hide_manager.update_hovered_with_coords (x, y);
+
+      return true;
     }
 
     /**
@@ -494,30 +668,36 @@ namespace Plank {
 
       var needs_reposition = true;
       if (get_realized ()) {
-        int x_current, y_current;
-        get_position (out x_current, out y_current);
-        needs_reposition = (win_rect.x != x_current || win_rect.y != y_current
-                            || win_rect.x != requested_x || win_rect.y != requested_y);
+        if (uses_wayland_positioning ()) {
+          needs_reposition = (win_rect.x != requested_x || win_rect.y != requested_y);
+        } else {
+          int x_current, y_current;
+          get_position (out x_current, out y_current);
+          needs_reposition = (win_rect.x != x_current || win_rect.y != y_current
+                              || win_rect.x != requested_x || win_rect.y != requested_y);
+        }
       }
 
       if (needs_resize) {
         Logger.verbose ("DockWindow.set_size_request (width = %i, height = %i)", win_rect.width, win_rect.height);
         set_size_request (win_rect.width, win_rect.height);
         controller.renderer.reset_buffers ();
-
-        if (!needs_reposition) {
-          set_struts ();
-          set_hovered_provider (null);
-          set_hovered (null);
-        }
       }
 
       if (needs_reposition) {
-        Logger.verbose ("DockWindow.move (x = %i, y = %i)", win_rect.x, win_rect.y);
         requested_x = win_rect.x;
         requested_y = win_rect.y;
-        move (win_rect.x, win_rect.y);
+        if (!uses_wayland_positioning ()) {
+          Logger.verbose ("DockWindow.move (x = %i, y = %i)", win_rect.x, win_rect.y);
+          move (win_rect.x, win_rect.y);
+        }
+      }
 
+      if (needs_resize || needs_reposition) {
+#if HAVE_GTK_LAYER_SHELL
+        if (uses_wayland_layer_shell ())
+          update_wayland_surface (win_rect);
+#endif
         set_struts ();
         set_hovered_provider (null);
         set_hovered (null);
@@ -529,6 +709,9 @@ namespace Plank {
      */
     public void update_icon_regions () {
       Logger.verbose ("DockWindow.update_icon_regions ()");
+
+      if (!WindowControl.is_supported ())
+        return;
 
       var use_hidden_region = (menu_is_visible () || controller.hide_manager.Hidden);
 
@@ -549,6 +732,9 @@ namespace Plank {
      */
     public void update_icon_region (ApplicationDockItem appitem) {
       if (!appitem.is_running ())
+        return;
+
+      if (!WindowControl.is_supported ())
         return;
 
       Logger.verbose ("DockWindow.update_icon_region ('%s')", appitem.Text);
@@ -628,12 +814,6 @@ namespace Plank {
       }
 
       if (position_menu) {
-        Gtk.Requisition requisition;
-        menu.get_preferred_size (null, out requisition);
-
-        int x, y;
-        controller.position_manager.get_menu_position (HoveredItem, requisition, out x, out y);
-
         Gdk.Gravity gravity;
         Gdk.Gravity flipped_gravity;
 
@@ -660,18 +840,29 @@ namespace Plank {
           break;
         }
 
-        menu.popup_at_rect (
-                            get_screen ().get_root_window (),
-                            Gdk.Rectangle () {
-          x = x,
-          y = y,
-          width = 1,
-          height = 1,
-        },
-                            gravity,
-                            flipped_gravity,
-                            event
-        );
+        if (uses_wayland_positioning ()) {
+          var anchor = controller.position_manager.get_menu_anchor_rect (HoveredItem);
+          menu.popup_at_rect (get_window (), anchor, gravity, flipped_gravity, event);
+        } else {
+          Gtk.Requisition requisition;
+          menu.get_preferred_size (null, out requisition);
+
+          int x, y;
+          controller.position_manager.get_menu_position (HoveredItem, requisition, out x, out y);
+
+          menu.popup_at_rect (
+                              get_screen ().get_root_window (),
+                              Gdk.Rectangle () {
+            x = x,
+            y = y,
+            width = 1,
+            height = 1,
+          },
+                              gravity,
+                              flipped_gravity,
+                              event
+          );
+        }
       } else {
         menu.popup_at_pointer (event);
       }
@@ -762,6 +953,9 @@ namespace Plank {
       if (!get_realized ())
         return;
 
+      if (uses_wayland_positioning ())
+        return;
+
       var cursor_rect = controller.position_manager.get_cursor_region ();
 
       if (cursor_rect != input_rect) {
@@ -774,6 +968,16 @@ namespace Plank {
       if (!get_realized ())
         return;
 
+      if (uses_wayland_layer_shell ()) {
+#if HAVE_GTK_LAYER_SHELL
+        update_wayland_surface (controller.position_manager.get_dock_window_region ());
+#endif
+        return;
+      }
+
+      if (uses_wayland_positioning ())
+        return;
+
       unowned Gdk.X11.Display gdk_display = (get_display () as Gdk.X11.Display);
       if (gdk_display == null)
         return;
@@ -784,7 +988,7 @@ namespace Plank {
 
       var struts = new ulong[Struts.N_VALUES];
 
-      if (controller.prefs.HideMode == HideType.NONE)
+      if (HideManager.get_effective_hide_mode_for_environment (controller.prefs.HideMode) == HideType.NONE)
         controller.position_manager.get_struts (ref struts);
 
       var first_struts = new ulong[Struts.BOTTOM + 1];

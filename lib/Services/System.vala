@@ -28,8 +28,14 @@ namespace Plank
 		
 		public static unowned System get_default ()
 		{
-			if (instance == null)
-				instance = new System (Gdk.Display.get_default ().get_app_launch_context ());
+			if (instance == null) {
+				AppLaunchContext launch_context;
+				if (environment_is_session_type (XdgSessionType.WAYLAND))
+					launch_context = new GLib.AppLaunchContext ();
+				else
+					launch_context = Gdk.Display.get_default ().get_app_launch_context ();
+				instance = new System (launch_context);
+			}
 			
 			return instance;
 		}

@@ -50,13 +50,18 @@ namespace Plank
 		
 		construct
 		{
+			pending_views = new Gee.HashSet<Bamf.View> ();
+
+			if (!session_supports_window_manager_integration ()) {
+				message ("BAMF integration disabled in this session.");
+				return;
+			}
+
 			bamf_matcher = Bamf.Matcher.get_default ();
 			bamf_matcher.active_application_changed.connect_after (handle_active_application_changed);
 			bamf_matcher.active_window_changed.connect_after (handle_active_window_changed);
 			bamf_matcher.view_opened.connect_after (handle_view_opened);
 			bamf_matcher.view_closed.connect_after (handle_view_closed);
-			
-			pending_views = new Gee.HashSet<Bamf.View> ();
 		}
 		
 		~Matcher ()
@@ -64,10 +69,12 @@ namespace Plank
 			foreach (var view in pending_views)
 				view.user_visible_changed.disconnect (handle_view_user_visible_changed);
 			
-			bamf_matcher.active_application_changed.disconnect (handle_active_application_changed);
-			bamf_matcher.active_window_changed.disconnect (handle_active_window_changed);
-			bamf_matcher.view_opened.disconnect (handle_view_opened);
-			bamf_matcher.view_closed.disconnect (handle_view_closed);
+			if (bamf_matcher != null) {
+				bamf_matcher.active_application_changed.disconnect (handle_active_application_changed);
+				bamf_matcher.active_window_changed.disconnect (handle_active_window_changed);
+				bamf_matcher.view_opened.disconnect (handle_view_opened);
+				bamf_matcher.view_closed.disconnect (handle_view_closed);
+			}
 			bamf_matcher = null;
 		}
 		
@@ -118,8 +125,12 @@ namespace Plank
 		
 		public Gee.ArrayList<Bamf.Application> active_launchers ()
 		{
-			var apps = bamf_matcher.get_running_applications ();
 			var list = new Gee.ArrayList<Bamf.Application> ();
+
+			if (bamf_matcher == null)
+				return list;
+
+			var apps = bamf_matcher.get_running_applications ();
 			
 			warn_if_fail (apps != null);
 			if (apps == null)
@@ -133,6 +144,9 @@ namespace Plank
 		
 		public Bamf.Application? app_for_uri (string uri)
 		{
+			if (bamf_matcher == null)
+				return null;
+
 			string launcher;
 			try {
 				launcher = Filename.from_uri (uri);
@@ -150,6 +164,9 @@ namespace Plank
 		
 		public void set_favorites (Gee.ArrayList<string> favs)
 		{
+			if (bamf_matcher == null)
+				return;
+
 			var paths = new string[favs.size];
 			
 			for (var i = 0; i < favs.size; i++)

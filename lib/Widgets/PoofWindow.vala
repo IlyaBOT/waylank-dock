@@ -89,6 +89,9 @@ namespace Plank
 		 */
 		public void show_at (int x, int y)
 		{
+			if (!environment_supports_hover_popups ())
+				return;
+
 			if (animation_timer_id > 0U)
 				GLib.Source.remove (animation_timer_id);
 			

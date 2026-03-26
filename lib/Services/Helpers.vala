@@ -52,7 +52,8 @@ namespace Plank {
       bool current_workspace_only = false;
 
       if (provider != null) {
-        current_workspace_only = provider.Prefs.CurrentWorkspaceOnly;
+        current_workspace_only = (provider.Prefs.CurrentWorkspaceOnly
+                                  && environment_supports_workspace_tracking ());
       }
 
       return current_workspace_only;
@@ -63,6 +64,10 @@ namespace Plank {
 
       if (app == null) {
         return window_count;
+      }
+
+      if (!environment_supports_window_manager_integration ()) {
+        return 0;
       }
 
       if (current_workspace_only (provider)) {

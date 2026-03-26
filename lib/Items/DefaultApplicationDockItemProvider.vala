@@ -41,7 +41,8 @@ namespace Plank {
       Prefs.notify["CurrentWorkspaceOnly"].connect (handle_setting_changed);
       Prefs.notify["PinnedOnly"].connect (handle_pinned_only_changed);
 
-      current_workspace_only = Prefs.CurrentWorkspaceOnly;
+      current_workspace_only = (Prefs.CurrentWorkspaceOnly
+                                && environment_supports_workspace_tracking ());
 
       if (current_workspace_only)
         connect_wnck ();
@@ -62,7 +63,7 @@ namespace Plank {
     protected void internal_update_visible_elements (bool update_indicator) {
       Logger.verbose ("DefaultDockItemProvider.update_visible_items ()");
 
-      if (Prefs.CurrentWorkspaceOnly) {
+      if (Prefs.CurrentWorkspaceOnly && environment_supports_workspace_tracking ()) {
         unowned Wnck.Workspace? active_workspace = Wnck.Screen.get_default ().get_active_workspace ();
         foreach (var item in internal_elements) {
           unowned TransientDockItem? transient = (item as TransientDockItem);
@@ -197,10 +198,12 @@ namespace Plank {
     }
 
     void handle_setting_changed () {
-      if (current_workspace_only == Prefs.CurrentWorkspaceOnly)
+      var new_current_workspace_only = (Prefs.CurrentWorkspaceOnly
+                                        && environment_supports_workspace_tracking ());
+      if (current_workspace_only == new_current_workspace_only)
         return;
 
-      current_workspace_only = Prefs.CurrentWorkspaceOnly;
+      current_workspace_only = new_current_workspace_only;
 
       if (current_workspace_only)
         connect_wnck ();

@@ -66,7 +66,13 @@ namespace Docky {
      * @return true if workspaces are supported, false otherwise
      */
     public bool is_supported () {
-      unowned Wnck.Screen screen = Wnck.Screen.get_default ();
+      if (!Plank.environment_supports_workspace_tracking ())
+        return false;
+
+      unowned Wnck.Screen? screen = Wnck.Screen.get_default ();
+      if (screen == null)
+        return false;
+
       int workspace_count = screen.get_workspace_count ();
 
       return workspace_count > 0;

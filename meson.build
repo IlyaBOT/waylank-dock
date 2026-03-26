@@ -182,6 +182,16 @@ m_dep = cc.find_library('m', required: false)
 
 plank_base_dep = [gio_dep, gee_dep, gtk_dep, bamf_dep]
 
+gtk_layer_shell_dep = dependency('gtk-layer-shell-0', required: false)
+if gtk_layer_shell_dep.found()
+  add_project_arguments(
+    '--define', 'HAVE_GTK_LAYER_SHELL',
+    '--pkg', 'gtk-layer-shell-0',
+    language: 'vala',
+  )
+  plank_base_dep += [gtk_layer_shell_dep]
+endif
+
 # Support dynamic quicklists provided with dbusmenu
 enable_dbusmenu = get_option('enable-dbusmenu')
 if enable_dbusmenu != 'no'

@@ -15,8 +15,18 @@ plank_gschema = configure_file(
   install_dir: join_paths(data_dir, 'glib-2.0', 'schemas'),
 )
 
-plank_gschema_compile = gnome.compile_schemas(
-  depend_files: plank_gschema,
+glib_compile_schemas = find_program('glib-compile-schemas')
+plank_gschema_compile = custom_target(
+  'gsettings-compile-data',
+  input: plank_gschema,
+  output: 'gschemas.compiled',
+  command: [
+    glib_compile_schemas,
+    '--targetdir',
+    meson.current_build_dir(),
+    meson.current_build_dir(),
+  ],
+  build_by_default: true,
 )
 
 i18n.merge_file(
@@ -53,4 +63,3 @@ if enable_apport
     install_dir: join_paths(get_option('sysconfdir'), 'apport', 'crashdb.conf.d'),
   )
 endif
-

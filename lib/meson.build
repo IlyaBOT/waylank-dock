@@ -11,6 +11,7 @@ plank_lib_sources = [
   'Docklets/Docklet.vala',
   'Docklets/DockletItem.vala',
   'Docklets/DockletManager.vala',
+  'Docklets/UnsupportedDockletItem.vala',
   'Drawing/Color.vala',
   'Drawing/DrawingService.vala',
   'Drawing/DockTheme.vala',

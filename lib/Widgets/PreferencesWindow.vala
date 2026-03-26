@@ -145,10 +145,10 @@ namespace Plank {
         cb_items_alignment.active_id = ((int) prefs.ItemsAlignment).to_string ();
         break;
       case "HideMode":
-        var hide_none = (prefs.HideMode != HideType.NONE);
+        var effective_hide_mode = HideManager.get_effective_hide_mode_for_environment (prefs.HideMode);
+        var hide_none = (effective_hide_mode != HideType.NONE);
         sw_hide.set_active (hide_none);
-        if (!hide_none)
-          cb_hidemode.active_id = ((int) prefs.HideMode).to_string ();
+        cb_hidemode.active_id = ((int) effective_hide_mode).to_string ();
         break;
       case "LockItems":
         sw_lock_items.set_active (prefs.LockItems);
@@ -163,11 +163,15 @@ namespace Plank {
         sw_anchor_files.set_active (prefs.AnchorFiles);
         break;
       case "Monitor":
-        var pos = 0;
-        foreach (unowned string plug_name in Plank.PositionManager.get_monitor_plug_names (get_screen ())) {
-          if (plug_name == prefs.Monitor)
-            cb_display_plug.set_active (pos);
-          pos++;
+        if (prefs.Monitor == "") {
+          cb_display_plug.set_active (Plank.PositionManager.get_primary_monitor_number (get_screen ()));
+        } else {
+          var pos = 0;
+          foreach (unowned string plug_name in Plank.PositionManager.get_monitor_plug_names (get_screen ())) {
+            if (plug_name == prefs.Monitor)
+              cb_display_plug.set_active (pos);
+            pos++;
+          }
         }
         break;
       case "Offset":
@@ -222,7 +226,10 @@ namespace Plank {
     }
 
     void hidemode_changed (Gtk.ComboBox widget) {
-      prefs.HideMode = (HideType) int.parse (widget.get_active_id ());
+      var requested_mode = (HideType) int.parse (widget.get_active_id ());
+      prefs.HideMode = HideManager.get_effective_hide_mode_for_environment (requested_mode);
+      if (prefs.HideMode != requested_mode)
+        cb_hidemode.active_id = ((int) prefs.HideMode).to_string ();
     }
 
     void position_changed (Gtk.ComboBox widget) {
@@ -241,11 +248,11 @@ namespace Plank {
 
     void hide_toggled (GLib.Object widget, ParamSpec param) {
       if (((Gtk.Switch) widget).get_active ()) {
-        prefs.HideMode = HideType.INTELLIGENT;
+        prefs.HideMode = HideManager.get_effective_hide_mode_for_environment (HideType.INTELLIGENT);
         cb_hidemode.sensitive = true;
         sp_hide_delay.sensitive = true;
         sp_unhide_delay.sensitive = true;
-        sw_pressure_reveal.sensitive = true;
+        sw_pressure_reveal.sensitive = environment_supports_pointer_barriers ();
       } else {
         prefs.HideMode = HideType.NONE;
         cb_hidemode.sensitive = false;
@@ -378,7 +385,7 @@ namespace Plank {
       if (selected_pos >= 0) {
         cb_display_plug.set_active (selected_pos);
       } else if (current_monitor == "") {
-        cb_display_plug.set_active (0);
+        cb_display_plug.set_active (Plank.PositionManager.get_primary_monitor_number (get_screen ()));
       } else {
         cb_display_plug.set_active (0);
         prefs.Monitor = "";
@@ -465,16 +472,17 @@ namespace Plank {
         pos++;
       }
 
-      cb_hidemode.active_id = ((int) prefs.HideMode).to_string ();
-      cb_hidemode.sensitive = (prefs.HideMode != HideType.NONE);
+      var effective_hide_mode = HideManager.get_effective_hide_mode_for_environment (prefs.HideMode);
+      cb_hidemode.active_id = ((int) effective_hide_mode).to_string ();
+      cb_hidemode.sensitive = (effective_hide_mode != HideType.NONE);
       cb_position.active_id = ((int) prefs.Position).to_string ();
       adj_hide_delay.value = prefs.HideDelay;
       adj_unhide_delay.value = prefs.UnhideDelay;
 
       refresh_display_plugs ();
 
-      sp_hide_delay.sensitive = (prefs.HideMode != HideType.NONE);
-      sp_unhide_delay.sensitive = (prefs.HideMode != HideType.NONE);
+      sp_hide_delay.sensitive = (effective_hide_mode != HideType.NONE);
+      sp_unhide_delay.sensitive = (effective_hide_mode != HideType.NONE);
 
       adj_iconsize.value = prefs.IconSize;
       adj_gapsize.value = prefs.GapSize;
@@ -482,7 +490,7 @@ namespace Plank {
       adj_zoom_percent.value = prefs.ZoomPercent;
       s_offset.sensitive = (prefs.Alignment == Gtk.Align.CENTER);
       s_zoom_percent.sensitive = prefs.ZoomEnabled;
-      sw_hide.set_active (prefs.HideMode != HideType.NONE);
+      sw_hide.set_active (effective_hide_mode != HideType.NONE);
       sw_primary_display.set_active (prefs.Monitor == "");
       sw_active_display.set_active (prefs.ActiveDisplay);
       adj_active_display_polling_interval.value = prefs.ActiveDisplayPollingInterval;
@@ -497,12 +505,15 @@ namespace Plank {
         s_active_display_polling_interval.sensitive = false;
       }
       sw_workspace_only.set_active (prefs.CurrentWorkspaceOnly);
+      sw_workspace_only.sensitive = environment_supports_workspace_tracking ();
       sw_show_unpinned.set_active (!prefs.PinnedOnly);
       sw_lock_items.set_active (prefs.LockItems);
       sw_tooltips_enabled.set_active (prefs.TooltipsEnabled);
       sw_anchor_docklets.set_active (prefs.AnchorDocklets);
       sw_anchor_files.set_active (prefs.AnchorFiles);
       sw_pressure_reveal.set_active (prefs.PressureReveal);
+      sw_pressure_reveal.sensitive = ((effective_hide_mode != HideType.NONE)
+                                      && environment_supports_pointer_barriers ());
       sw_zoom_enabled.set_active (prefs.ZoomEnabled);
       cb_alignment.active_id = ((int) prefs.Alignment).to_string ();
       cb_items_alignment.active_id = ((int) prefs.ItemsAlignment).to_string ();
@@ -522,6 +533,9 @@ namespace Plank {
       view_docklets.item_activated.connect (view_item_activated);
 
       foreach (var docklet in DockletManager.get_default ().list_docklets ()) {
+        if (!docklet.is_supported ())
+          continue;
+
         var pixbuf = DrawingService.load_icon (docklet.get_icon (), 48, 48);
         model_docklets.add (docklet.get_id (), docklet.get_name (), docklet.get_description (), docklet.get_icon (), pixbuf);
       }

@@ -704,12 +704,6 @@ namespace Docky {
 
       menu.show_all();
 
-      Gtk.Requisition requisition;
-      menu.get_preferred_size(null,out requisition);
-
-      int x,y;
-      controller.position_manager.get_menu_position(this,requisition,out x,out y);
-
       Gdk.Gravity gravity;
       Gdk.Gravity flipped_gravity;
 
@@ -736,18 +730,29 @@ namespace Docky {
         break;
       }
 
-      menu.popup_at_rect(
-                         controller.window.get_screen().get_root_window(),
-                         Gdk.Rectangle() {
-        x = x,
-        y = y,
-        width = 1,
-        height = 1,
-      },
-                         gravity,
-                         flipped_gravity,
-                         null
-      );
+      if (environment_is_session_type (XdgSessionType.WAYLAND)) {
+        var anchor = controller.position_manager.get_menu_anchor_rect (this);
+        menu.popup_at_rect (controller.window.get_window (), anchor, gravity, flipped_gravity, null);
+      } else {
+        Gtk.Requisition requisition;
+        menu.get_preferred_size (null, out requisition);
+
+        int x, y;
+        controller.position_manager.get_menu_position (this, requisition, out x, out y);
+
+        menu.popup_at_rect(
+                           controller.window.get_screen().get_root_window(),
+                           Gdk.Rectangle() {
+          x = x,
+          y = y,
+          width = 1,
+          height = 1,
+        },
+                           gravity,
+                           flipped_gravity,
+                           null
+        );
+      }
     }
 
     private Gtk.MenuItem create_notification_menu_item(NotificationData notification) {

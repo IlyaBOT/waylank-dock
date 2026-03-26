@@ -245,12 +245,6 @@ namespace Docky {
         return;
       }
 
-      Gtk.Requisition requisition;
-      menu_widget.get_preferred_size(null, out requisition);
-
-      int x, y;
-      controller.position_manager.get_menu_position(this, requisition, out x, out y);
-
       Gdk.Gravity gravity;
       Gdk.Gravity flipped_gravity;
 
@@ -277,18 +271,29 @@ namespace Docky {
         break;
       }
 
-      menu_widget.popup_at_rect(
-                             controller.window.get_screen().get_root_window(),
-                             Gdk.Rectangle() {
-        x = x,
-        y = y,
-        width = 1,
-        height = 1,
-      },
-                             gravity,
-                             flipped_gravity,
-                             null
-      );
+      if (environment_is_session_type (XdgSessionType.WAYLAND)) {
+        var anchor = controller.position_manager.get_menu_anchor_rect (this);
+        menu_widget.popup_at_rect (controller.window.get_window (), anchor, gravity, flipped_gravity, null);
+      } else {
+        Gtk.Requisition requisition;
+        menu_widget.get_preferred_size (null, out requisition);
+
+        int x, y;
+        controller.position_manager.get_menu_position (this, requisition, out x, out y);
+
+        menu_widget.popup_at_rect(
+                               controller.window.get_screen().get_root_window(),
+                               Gdk.Rectangle() {
+          x = x,
+          y = y,
+          width = 1,
+          height = 1,
+        },
+                               gravity,
+                               flipped_gravity,
+                               null
+        );
+      }
     }
 
     public override Gee.ArrayList<Gtk.MenuItem> get_menu_items() {

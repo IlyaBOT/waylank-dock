@@ -262,11 +262,10 @@ namespace Plank {
       internal_quarks_initialize ();
       environment_initialize ();
 
-      // Make sure we are not doing silly things like trying to run in a wayland-session!
       if (environment_is_session_type (XdgSessionType.WAYLAND)) {
-        critical ("Wayland environments are not supported.");
-        quit ();
-        return;
+        warning ("Wayland support is experimental. X11-specific window tracking will be disabled.");
+        if (!environment_supports_wayland_layer_shell ())
+          warning ("gtk-layer-shell support is unavailable, dock positioning may be limited.");
       }
 
       // Initialize FontConfig
@@ -409,7 +408,8 @@ namespace Plank {
       about_dlg = new Gtk.AboutDialog ();
       about_dlg.window_position = Gtk.WindowPosition.CENTER;
       about_dlg.gravity = Gdk.Gravity.CENTER;
-      about_dlg.set_transient_for (primary_dock.window);
+      if (!environment_is_session_type (XdgSessionType.WAYLAND))
+        about_dlg.set_transient_for (primary_dock.window);
 
       about_dlg.set_program_name (exec_name);
       about_dlg.set_version ("%s\n%s".printf (build_version, build_version_info));
@@ -1154,13 +1154,15 @@ please read https://www.gnu.org/licenses/why-not-lgpl.html.""");
     void show_preferences (DockController controller) {
       if (preferences_dlg != null) {
         preferences_dlg.controller = controller;
-        preferences_dlg.set_transient_for (controller.window);
+        if (!environment_is_session_type (XdgSessionType.WAYLAND))
+          preferences_dlg.set_transient_for (controller.window);
         preferences_dlg.show ();
         return;
       }
 
       preferences_dlg = new PreferencesWindow (controller);
-      preferences_dlg.set_transient_for (controller.window);
+      if (!environment_is_session_type (XdgSessionType.WAYLAND))
+        preferences_dlg.set_transient_for (controller.window);
 
       preferences_dlg.destroy.connect (() => {
         preferences_dlg = null;

@@ -32,10 +32,7 @@ namespace Plank {
    * @return a new GLib.Settings object
    */
   public static GLib.Settings create_settings (string schema_id, string? path = null) {
-    // Allow running uninstalled from build directory during development
-    Environment.set_variable ("GSETTINGS_SCHEMA_DIR", Environment.get_current_dir () + "/data", false);
-
-    var schema = GLib.SettingsSchemaSource.get_default ().lookup (schema_id, true);
+    var schema = lookup_settings_schema (schema_id);
     if (schema == null)
       error ("GSettingsSchema '%s' not found", schema_id);
 
@@ -55,13 +52,110 @@ namespace Plank {
    */
   public static GLib.Settings ? try_create_settings (string schema_id, string? path = null)
   {
-    var schema = GLib.SettingsSchemaSource.get_default ().lookup (schema_id, true);
+    var schema = lookup_settings_schema (schema_id);
     if (schema == null) {
       warning ("GSettingsSchema '%s' not found", schema_id);
       return null;
     }
 
     return new GLib.Settings.full (schema, null, path);
+  }
+
+  static GLib.SettingsSchema? lookup_settings_schema (string schema_id) {
+    unowned GLib.SettingsSchemaSource? default_source = GLib.SettingsSchemaSource.get_default ();
+    if (default_source != null) {
+      var default_schema = default_source.lookup (schema_id, true);
+      if (default_schema != null)
+        return default_schema;
+    }
+
+    foreach (var schema_dir in get_settings_schema_dirs ()) {
+      ensure_compiled_schemas (schema_dir);
+
+      try {
+        var source = new GLib.SettingsSchemaSource.from_directory (schema_dir, default_source, false);
+        var schema = source.lookup (schema_id, true);
+        if (schema != null)
+          return schema;
+      } catch (Error e) {
+        warning ("Unable to load GSettings schemas from '%s': %s", schema_dir, e.message);
+      }
+    }
+
+    return null;
+  }
+
+  static string[] get_settings_schema_dirs () {
+    var dirs = new Gee.ArrayList<string> ();
+
+    var current_dir = Environment.get_current_dir ();
+    add_settings_schema_dir (dirs, Environment.get_variable ("GSETTINGS_SCHEMA_DIR"));
+    add_settings_schema_dir (dirs, Path.build_filename (current_dir, "build", "data"));
+    add_settings_schema_dir (dirs, Path.build_filename (current_dir, "data"));
+    add_settings_schema_dir (dirs, Path.build_filename (current_dir, "..", "data"));
+    add_settings_schema_dir (dirs, Path.build_filename (current_dir, "..", "..", "data"));
+
+    return dirs.to_array ();
+  }
+
+  static void add_settings_schema_dir (Gee.ArrayList<string> dirs, string? dir) {
+    if (dir == null || dir == "")
+      return;
+    if (!dirs.contains (dir))
+      dirs.add (dir);
+  }
+
+  static void ensure_compiled_schemas (string schema_dir) {
+    var dir = File.new_for_path (schema_dir);
+    if (!dir.query_exists ())
+      return;
+
+    var compiled = dir.get_child ("gschemas.compiled");
+    if (compiled.query_exists ())
+      return;
+
+    if (!contains_uncompiled_schemas (dir))
+      return;
+
+    string? compiler = Environment.find_program_in_path ("glib-compile-schemas");
+    if (compiler == null) {
+      warning ("glib-compile-schemas not found while preparing '%s'", schema_dir);
+      return;
+    }
+
+    try {
+      string? stdout_buf = null;
+      string? stderr_buf = null;
+      int status = 0;
+      Process.spawn_sync (null,
+                          { compiler, schema_dir },
+                          null,
+                          SpawnFlags.SEARCH_PATH,
+                          null,
+                          out stdout_buf,
+                          out stderr_buf,
+                          out status);
+      if (status != 0) {
+        warning ("glib-compile-schemas failed for '%s': %s", schema_dir, (stderr_buf ?? "").strip ());
+      }
+    } catch (SpawnError e) {
+      warning ("Unable to run glib-compile-schemas for '%s': %s", schema_dir, e.message);
+    }
+  }
+
+  static bool contains_uncompiled_schemas (File dir) {
+    try {
+      var enumerator = dir.enumerate_children (FileAttribute.STANDARD_NAME, FileQueryInfoFlags.NONE);
+      FileInfo? info;
+      while ((info = enumerator.next_file ()) != null) {
+        if (info.get_name ().has_suffix (".gschema.xml"))
+          return true;
+      }
+    } catch (Error e) {
+      warning ("Unable to inspect schema directory '%s': %s", dir.get_path () ?? "", e.message);
+    }
+
+    return false;
   }
 
   /**

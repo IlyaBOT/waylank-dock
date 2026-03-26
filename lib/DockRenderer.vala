@@ -356,6 +356,12 @@ namespace Plank {
       unowned DockItem dragged_item = controller.drag_manager.DragItem;
       var win_rect = position_manager.get_dock_window_region ();
 
+      // Some GTK3 Wayland/layer-shell setups hand us an empty damage clip on
+      // first frames. Reset it so the dock actually reaches the window surface.
+      cr.reset_clip ();
+      cr.rectangle (0, 0, win_rect.width, win_rect.height);
+      cr.clip ();
+
       if (main_buffer == null) {
         main_buffer = new Surface.with_cairo_surface (win_rect.width, win_rect.height, cr.get_target ());
         main_buffer.Internal.set_device_scale (window_scale_factor, window_scale_factor);

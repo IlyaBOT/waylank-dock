@@ -184,7 +184,16 @@ namespace Plank {
     WindowControl () {
     }
 
+    public static bool is_supported () {
+      return session_supports_window_manager_integration ();
+    }
+
     public static void initialize () {
+      if (!is_supported ()) {
+        message ("Window control integration disabled in this session.");
+        return;
+      }
+
       Wnck.set_client_type (Wnck.ClientType.PAGER);
 
       unowned Wnck.Screen screen = Wnck.Screen.get_default ();
@@ -224,6 +233,9 @@ namespace Plank {
 
     public static unowned Gdk.Pixbuf? get_app_icon (Bamf.Application app)
     {
+      if (!is_supported ())
+        return null;
+
       unowned Gdk.Pixbuf? pbuf = null;
 
       Array<uint32>? xids = app.get_xids ();
@@ -250,6 +262,9 @@ namespace Plank {
 
     public static unowned Gdk.Pixbuf? get_window_icon (Bamf.Window window)
     {
+      if (!is_supported ())
+        return null;
+
       unowned Wnck.Window w = Wnck.Window.@get (window.get_xid ());
       unowned Gdk.Pixbuf? pbuf = null;
 
@@ -272,6 +287,9 @@ namespace Plank {
 
     public static Gdk.Pixbuf? get_window_thumbnail (Bamf.Window window)
     {
+      if (!is_supported ())
+        return null;
+
       unowned Wnck.Window w = Wnck.Window.@get (window.get_xid ());
 
       warn_if_fail (w != null);
@@ -310,6 +328,9 @@ namespace Plank {
 
     public static unowned Wnck.Workspace? get_window_workspace (Bamf.Window window)
     {
+      if (!is_supported ())
+        return null;
+
       unowned Wnck.Window w = Wnck.Window.@get (window.get_xid ());
       unowned Wnck.Workspace? workspace = null;
 
@@ -451,6 +472,9 @@ namespace Plank {
     }
 
     public static void update_icon_regions (Bamf.Application app, Gdk.Rectangle rect) {
+      if (!is_supported ())
+        return;
+
       Array<uint32>? xids = app.get_xids ();
 
       warn_if_fail (xids != null);
@@ -611,6 +635,9 @@ namespace Plank {
     public static GLib.List<unowned Wnck.Window> get_ordered_window_stack (Bamf.Application app) {
       var windows = new GLib.List<unowned Wnck.Window> ();
 
+      if (!is_supported ())
+        return windows;
+
       Array<uint32>? xids = app.get_xids ();
 
       if (xids == null) {
@@ -629,6 +656,9 @@ namespace Plank {
     }
 
     public static void smart_focus (Bamf.Application app, uint32 event_time) {
+      if (!is_supported ())
+        return;
+
       var windows = get_ordered_window_stack (app);
 
       var not_in_viewport = true;

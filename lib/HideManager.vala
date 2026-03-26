@@ -56,6 +56,7 @@ namespace Plank {
     // this allows window animations to occur, which might change
     // the results of our update
     const uint UPDATE_TIMEOUT = 200U;
+    const uint KWIN_UPDATE_TIMEOUT = 100U;
 
 #if HAVE_BARRIERS
     const double PRESSURE_THRESHOLD = 50.0;
@@ -92,6 +93,11 @@ namespace Plank {
     uint prefs_changed_timer_id = 0U;
     uint geometry_timer_id = 0U;
     uint window_changed_timer_id = 0U;
+    uint kwin_poll_timer_id = 0U;
+    bool window_tracking_enabled = false;
+    bool kwin_wayland_tracking_enabled = false;
+    bool warned_hide_mode_fallback = false;
+    DBusConnection? kwin_connection = null;
 
     bool pointer_update = true;
     bool window_intersect = false;
@@ -125,6 +131,24 @@ namespace Plank {
       GLib.Object (controller: controller);
     }
 
+    static bool supports_hide_mode_window_tracking () {
+      return (environment_supports_window_manager_integration ()
+              || (environment_is_session_type (XdgSessionType.WAYLAND)
+                  && environment_is_session_desktop (XdgSessionDesktop.KDE)));
+    }
+
+    public static HideType get_effective_hide_mode_for_environment (HideType requested_mode) {
+      if (supports_hide_mode_window_tracking ())
+        return requested_mode;
+
+      // Wayland currently lacks the X11-style window tracking Plank uses for
+      // intelligent dodge modes, but pointer-driven auto-hide still works.
+      if (requested_mode == HideType.NONE)
+        return HideType.NONE;
+
+      return HideType.AUTO;
+    }
+
     construct
     {
       controller.prefs.notify.connect (prefs_changed);
@@ -137,14 +161,33 @@ namespace Plank {
     requires (controller.window != null)
     {
       unowned DockWindow window = controller.window;
-      unowned Wnck.Screen wnck_screen = Wnck.Screen.get_default ();
 
 #if HAVE_BARRIERS
-      initialize_barriers_support ();
+      if (environment_supports_pointer_barriers ())
+        initialize_barriers_support ();
 #endif
 
       window.enter_notify_event.connect (handle_enter_notify_event);
       window.leave_notify_event.connect (handle_leave_notify_event);
+
+      if (!environment_supports_window_manager_integration ()) {
+        if (initialize_kwin_wayland_tracking ()) {
+          update_hidden ();
+          return;
+        }
+
+        message ("Window intersection tracking disabled in this session.");
+        update_hidden ();
+        return;
+      }
+
+      unowned Wnck.Screen? wnck_screen = Wnck.Screen.get_default ();
+      if (wnck_screen == null) {
+        warning ("Failed to acquire a Wnck.Screen, disabling window tracking.");
+        return;
+      }
+
+      window_tracking_enabled = true;
 
       wnck_screen.window_opened.connect_after (schedule_update);
       wnck_screen.window_closed.connect_after (schedule_update);
@@ -157,17 +200,19 @@ namespace Plank {
     ~HideManager () {
       unowned DockWindow window = controller.window;
       unowned DragManager drag_manager = controller.drag_manager;
-      unowned Wnck.Screen wnck_screen = Wnck.Screen.get_default ();
+      unowned Wnck.Screen? wnck_screen = Wnck.Screen.get_default ();
 
       controller.prefs.notify.disconnect (prefs_changed);
 
       window.enter_notify_event.disconnect (handle_enter_notify_event);
       window.leave_notify_event.disconnect (handle_leave_notify_event);
 
-      wnck_screen.window_opened.disconnect (schedule_update);
-      wnck_screen.window_closed.disconnect (schedule_update);
-      wnck_screen.active_window_changed.disconnect (handle_active_window_changed);
-      wnck_screen.active_workspace_changed.disconnect (handle_workspace_changed);
+      if (window_tracking_enabled && wnck_screen != null) {
+        wnck_screen.window_opened.disconnect (schedule_update);
+        wnck_screen.window_closed.disconnect (schedule_update);
+        wnck_screen.active_window_changed.disconnect (handle_active_window_changed);
+        wnck_screen.active_workspace_changed.disconnect (handle_workspace_changed);
+      }
 
       stop_timers ();
 
@@ -176,9 +221,11 @@ namespace Plank {
 
       if (barrier != 0) {
         unowned Gdk.X11.Display gdk_display = (controller.window.get_display () as Gdk.X11.Display);
-        unowned X.Display display = gdk_display.get_xdisplay ();
-        XFixes.destroy_pointer_barrier (display, barrier);
-        barrier = 0;
+        if (gdk_display != null) {
+          unowned X.Display display = gdk_display.get_xdisplay ();
+          XFixes.destroy_pointer_barrier (display, barrier);
+          barrier = 0;
+        }
       }
 #endif
     }
@@ -260,7 +307,10 @@ namespace Plank {
         }
 
         prefs_changed_timer_id = Gdk.threads_add_timeout (UPDATE_TIMEOUT, () => {
-          update_window_intersect ();
+          if (window_tracking_enabled || kwin_wayland_tracking_enabled)
+            update_window_intersect ();
+          else
+            update_hidden ();
 #if HAVE_BARRIERS
           update_barrier ();
 #endif
@@ -281,6 +331,13 @@ namespace Plank {
     }
 
     void update_hidden () {
+      var effective_hide_mode = get_effective_hide_mode_for_environment (controller.prefs.HideMode);
+      if (!warned_hide_mode_fallback && effective_hide_mode != controller.prefs.HideMode) {
+        warned_hide_mode_fallback = true;
+        warning ("Hide mode '%i' requires X11 window tracking; falling back to '%i'.",
+                 (int) controller.prefs.HideMode, (int) effective_hide_mode);
+      }
+
       if (Disabled) {
         if (Hidden)
           Hidden = false;
@@ -295,7 +352,7 @@ namespace Plank {
       }
 #endif
 
-      switch (controller.prefs.HideMode) {
+      switch (effective_hide_mode) {
       default:
       case HideType.NONE:
         show ();
@@ -442,7 +499,201 @@ namespace Plank {
     // intelligent hiding code
     //
 
+    bool initialize_kwin_wayland_tracking () {
+      if (!(environment_is_session_type (XdgSessionType.WAYLAND)
+            && environment_is_session_desktop (XdgSessionDesktop.KDE)))
+        return false;
+
+      try {
+        kwin_connection = Bus.get_sync (BusType.SESSION, null);
+      } catch (Error e) {
+        warning ("Failed to connect to KWin session bus: %s", e.message);
+        kwin_connection = null;
+        return false;
+      }
+
+      if (kwin_connection == null)
+        return false;
+
+      kwin_wayland_tracking_enabled = true;
+      message ("KWin active-window tracking enabled in this session.");
+
+      update_window_intersect ();
+      kwin_poll_timer_id = Gdk.threads_add_timeout (KWIN_UPDATE_TIMEOUT, () => {
+        update_window_intersect ();
+        return kwin_wayland_tracking_enabled;
+      });
+
+      return true;
+    }
+
+    static bool variant_lookup_bool (Variant map, string key, bool default_value = false) {
+      Variant? value = map.lookup_value (key, null);
+      if (value == null)
+        return default_value;
+
+      if (value.is_of_type (VariantType.BOOLEAN))
+        return value.get_boolean ();
+
+      return default_value;
+    }
+
+    static int variant_lookup_int (Variant map, string key, int default_value = 0) {
+      Variant? value = map.lookup_value (key, null);
+      if (value == null)
+        return default_value;
+
+      if (value.is_of_type (VariantType.INT32))
+        return value.get_int32 ();
+
+      if (value.is_of_type (VariantType.UINT32))
+        return (int) value.get_uint32 ();
+
+      if (value.is_of_type (VariantType.INT64))
+        return (int) value.get_int64 ();
+
+      if (value.is_of_type (VariantType.UINT64))
+        return (int) value.get_uint64 ();
+
+      return default_value;
+    }
+
+    static double variant_lookup_double (Variant map, string key, double default_value = 0.0) {
+      Variant? value = map.lookup_value (key, null);
+      if (value == null)
+        return default_value;
+
+      if (value.is_of_type (VariantType.DOUBLE))
+        return value.get_double ();
+
+      if (value.is_of_type (VariantType.INT32))
+        return value.get_int32 ();
+
+      if (value.is_of_type (VariantType.UINT32))
+        return value.get_uint32 ();
+
+      if (value.is_of_type (VariantType.INT64))
+        return value.get_int64 ();
+
+      if (value.is_of_type (VariantType.UINT64))
+        return value.get_uint64 ();
+
+      return default_value;
+    }
+
+    static string? variant_lookup_string (Variant map, string key) {
+      Variant? value = map.lookup_value (key, null);
+      if (value == null || !value.is_of_type (VariantType.STRING))
+        return null;
+
+      return value.get_string ();
+    }
+
+    bool query_kwin_active_window (out Gdk.Rectangle win_rect,
+                                   out bool intersects,
+                                   out bool active_maximized,
+                                   out bool dialog_intersect) {
+      win_rect = {};
+      intersects = false;
+      active_maximized = false;
+      dialog_intersect = false;
+
+      if (!kwin_wayland_tracking_enabled || kwin_connection == null)
+        return false;
+
+      try {
+        var reply = kwin_connection.call_sync ("org.kde.KWin",
+                                               "/KWin",
+                                               "org.kde.KWin",
+                                               "queryWindowInfo",
+                                               null,
+                                               new VariantType ("(a{sv})"),
+                                               DBusCallFlags.NONE,
+                                               -1,
+                                               null);
+        var info = reply.get_child_value (0);
+
+        if (variant_lookup_bool (info, "minimized", false))
+          return false;
+
+        var resource_class = variant_lookup_string (info, "resourceClass");
+        var resource_name = variant_lookup_string (info, "resourceName");
+        var desktop_file = variant_lookup_string (info, "desktopFile");
+        if ((resource_class != null && resource_class == "plank")
+            || (resource_name != null && resource_name == "plank")
+            || (desktop_file != null && desktop_file == "plank"))
+          return false;
+
+        win_rect.x = (int) Math.round (variant_lookup_double (info, "x"));
+        win_rect.y = (int) Math.round (variant_lookup_double (info, "y"));
+        win_rect.width = (int) Math.round (variant_lookup_double (info, "width"));
+        win_rect.height = (int) Math.round (variant_lookup_double (info, "height"));
+        if (win_rect.width <= 0 || win_rect.height <= 0)
+          return false;
+
+        var dock_rect = controller.position_manager.get_static_dock_region ();
+        intersects = win_rect.intersect (dock_rect, null);
+
+        var fullscreen = variant_lookup_bool (info, "fullscreen", false);
+        var maximized_h = variant_lookup_int (info, "maximizeHorizontal", 0) > 0;
+        var maximized_v = variant_lookup_int (info, "maximizeVertical", 0) > 0;
+        active_maximized = intersects && (fullscreen || maximized_h || maximized_v);
+
+        dialog_intersect = false;
+
+        return true;
+      } catch (Error e) {
+        warning ("Failed to query KWin active window: %s", e.message);
+      }
+
+      return false;
+    }
+
+    void update_window_intersect_from_kwin () {
+      Gdk.Rectangle win_rect;
+      bool intersects;
+      bool active_maximized;
+      bool dialog_intersect;
+
+      if (!query_kwin_active_window (out win_rect, out intersects, out active_maximized, out dialog_intersect)) {
+        window_intersect = false;
+        active_window_intersect = false;
+        active_application_intersect = false;
+        active_maximized_window_intersect = false;
+        dialog_windows_intersect = false;
+        pointer_update = false;
+        update_hidden ();
+        return;
+      }
+
+      last_window_rect = win_rect;
+      window_intersect = intersects;
+      active_window_intersect = intersects;
+      active_application_intersect = intersects;
+      active_maximized_window_intersect = active_maximized;
+      dialog_windows_intersect = dialog_intersect;
+
+      pointer_update = false;
+      update_hidden ();
+    }
+
     void update_window_intersect () {
+      if (kwin_wayland_tracking_enabled) {
+        update_window_intersect_from_kwin ();
+        return;
+      }
+
+      if (!window_tracking_enabled) {
+        window_intersect = false;
+        active_window_intersect = false;
+        active_application_intersect = false;
+        active_maximized_window_intersect = false;
+        dialog_windows_intersect = false;
+        pointer_update = false;
+        update_hidden ();
+        return;
+      }
+
       var dock_rect = controller.position_manager.get_static_dock_region ();
       var window_scale_factor = controller.window.get_window ().get_scale_factor ();
       if (window_scale_factor > 1) {
@@ -601,6 +852,11 @@ namespace Plank {
     }
 
     void stop_timers () {
+      if (kwin_poll_timer_id > 0U) {
+        GLib.Source.remove (kwin_poll_timer_id);
+        kwin_poll_timer_id = 0U;
+      }
+
       if (geometry_timer_id > 0U) {
         GLib.Source.remove (geometry_timer_id);
         geometry_timer_id = 0U;
@@ -790,7 +1046,7 @@ namespace Plank {
       if (!controller.prefs.PressureReveal && controller.prefs.GapSize == 0)
         return;
 
-      if (controller.prefs.HideMode == HideType.NONE)
+      if (get_effective_hide_mode_for_environment (controller.prefs.HideMode) == HideType.NONE)
         return;
 
       var root_xwindow = display.default_root_window ();

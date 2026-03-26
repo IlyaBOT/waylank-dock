@@ -52,4 +52,14 @@ namespace Plank
 
 	public const uint FOLDER_MAX_FILE_COUNT = 512;
 	public const uint LAUNCHER_DIR_MAX_FILE_COUNT = 128;
+
+	public static bool session_supports_window_manager_integration ()
+	{
+		unowned string? session_type = GLib.Environment.get_variable ("XDG_SESSION_TYPE");
+		if (session_type != null && session_type.down () == "wayland")
+			return false;
+
+		unowned string? wayland_display = GLib.Environment.get_variable ("WAYLAND_DISPLAY");
+		return (wayland_display == null || wayland_display == "");
+	}
 }

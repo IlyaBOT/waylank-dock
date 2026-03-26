@@ -129,8 +129,13 @@ namespace Plank {
       var launcher = get_launcher_from_dockitem (file);
 
       Docklet? docklet;
-      if ((docklet = DockletManager.get_default ().get_docklet_by_uri (launcher)) != null)
-        return docklet.make_element (launcher, file);
+      if ((docklet = DockletManager.get_default ().get_docklet_by_uri (launcher)) != null) {
+        if (docklet.is_supported ())
+          return docklet.make_element (launcher, file);
+
+        warning ("Docklet '%s' is unavailable in the current session.", docklet.get_id ());
+        return new UnsupportedDockletItem.with_dockitem_file (file, docklet);
+      }
 
       return default_make_element (file, launcher);
     }

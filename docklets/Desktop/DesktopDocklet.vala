@@ -36,7 +36,7 @@ namespace Docky {
 
     public unowned string get_icon () { return ICON_PATH; }
 
-    public bool is_supported () { return true; }
+    public bool is_supported () { return Plank.environment_supports_window_manager_integration (); }
 
     public Plank.DockElement make_element (string launcher, GLib.File file) {
       return new DesktopDockItem.with_dockitem_file (file);

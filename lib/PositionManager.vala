@@ -185,6 +185,25 @@ namespace Plank {
       return monitor.get_model () ?? "PLUG_MONITOR_%i".printf (index);
     }
 
+    public static int get_primary_monitor_number (Gdk.Screen screen) {
+      var display = screen.get_display ();
+      var primary_monitor = display.get_primary_monitor ();
+
+      if (primary_monitor != null) {
+        int n_monitors = display.get_n_monitors ();
+        for (int i = 0; i < n_monitors; i++) {
+          if (display.get_monitor (i) == primary_monitor)
+            return i;
+        }
+      }
+
+      var kde_primary = find_kde_primary_monitor_number (screen);
+      if (kde_primary >= 0)
+        return kde_primary;
+
+      return 0;
+    }
+
     public static string[] get_monitor_plug_names (Gdk.Screen screen) {
       var display = screen.get_display ();
       int n_monitors = display.get_n_monitors ();
@@ -199,16 +218,9 @@ namespace Plank {
 
     static int find_monitor_number (Gdk.Screen screen, string plug_name) {
       var display = screen.get_display ();
-      var primary_monitor = display.get_primary_monitor ();
 
       if (plug_name == "") {
-        // Find the index of the primary monitor
-        int n_monitors = display.get_n_monitors ();
-        for (int i = 0; i < n_monitors; i++) {
-          if (display.get_monitor (i) == primary_monitor)
-            return i;
-        }
-        return 0; // Fallback to first monitor
+        return get_primary_monitor_number (screen);
       }
 
       int n_monitors = display.get_n_monitors ();
@@ -217,12 +229,176 @@ namespace Plank {
           return i;
       }
 
-      // If we didn't find a match, find primary monitor index
+      return get_primary_monitor_number (screen);
+    }
+
+    static int find_kde_primary_monitor_number (Gdk.Screen screen) {
+      if (!environment_is_session_type (XdgSessionType.WAYLAND)
+          || !environment_is_session_desktop (XdgSessionDesktop.KDE))
+        return -1;
+
+      string? kscreen_doctor = Environment.find_program_in_path ("kscreen-doctor");
+      if (kscreen_doctor == null)
+        return -1;
+
+      try {
+        string? stdout_buf = null;
+        string? stderr_buf = null;
+        int status = 0;
+        Process.spawn_sync (null,
+                            { kscreen_doctor, "-j" },
+                            null,
+                            SpawnFlags.SEARCH_PATH,
+                            null,
+                            out stdout_buf,
+                            out stderr_buf,
+                            out status);
+        if (status != 0 || stdout_buf == null || stdout_buf == "")
+          return -1;
+
+        Gdk.Rectangle primary_geometry;
+        if (!try_get_kscreen_primary_geometry (stdout_buf, out primary_geometry))
+          return -1;
+
+        return find_monitor_number_by_geometry (screen, primary_geometry);
+      } catch (SpawnError e) {
+        warning ("Unable to query KDE display layout: %s", e.message);
+      }
+
+      return -1;
+    }
+
+    static bool try_get_kscreen_primary_geometry (string config_json, out Gdk.Rectangle geometry) {
+      geometry = {};
+      var best_priority = int.MAX;
+      var found = false;
+
+      foreach (var output_json in extract_kscreen_output_objects (config_json)) {
+        bool enabled;
+        int priority;
+        Gdk.Rectangle output_geometry;
+        if (!parse_kscreen_output (output_json, out enabled, out priority, out output_geometry))
+          continue;
+
+        if (!enabled || priority <= 0 || priority >= best_priority)
+          continue;
+
+        best_priority = priority;
+        geometry = output_geometry;
+        found = true;
+      }
+
+      return found;
+    }
+
+    static Gee.ArrayList<string> extract_kscreen_output_objects (string config_json) {
+      var outputs = new Gee.ArrayList<string> ();
+
+      var outputs_pos = config_json.index_of ("\"outputs\"");
+      if (outputs_pos < 0)
+        return outputs;
+
+      var array_start = config_json.index_of ("[", outputs_pos);
+      if (array_start < 0)
+        return outputs;
+
+      var in_object = false;
+      var depth = 0;
+      StringBuilder? current = null;
+
+      for (var idx = array_start + 1; idx < config_json.length; idx++) {
+        var c = config_json[idx];
+
+        if (!in_object) {
+          if (c == '{') {
+            in_object = true;
+            depth = 1;
+            current = new StringBuilder ();
+            current.append_c (c);
+          } else if (c == ']') {
+            break;
+          }
+
+          continue;
+        }
+
+        current.append_c (c);
+
+        if (c == '{') {
+          depth++;
+        } else if (c == '}') {
+          depth--;
+          if (depth == 0) {
+            outputs.add (current.str);
+            in_object = false;
+            current = null;
+          }
+        }
+      }
+
+      return outputs;
+    }
+
+    static bool parse_kscreen_output (string output_json, out bool enabled, out int priority, out Gdk.Rectangle geometry) {
+      enabled = false;
+      priority = int.MAX;
+      geometry = {};
+
+      try {
+        MatchInfo match_info;
+
+        var enabled_regex = new Regex ("\"enabled\"\\s*:\\s*(true|false)");
+        if (!enabled_regex.match (output_json, 0, out match_info))
+          return false;
+        enabled = (match_info.fetch (1) == "true");
+
+        var priority_pos = output_json.index_of ("\"priority\"");
+        if (priority_pos < 0)
+          return false;
+
+        var tail = output_json.substring (priority_pos);
+
+        var priority_regex = new Regex ("\"priority\"\\s*:\\s*(\\d+)");
+        if (!priority_regex.match (tail, 0, out match_info))
+          return false;
+        priority = int.parse (match_info.fetch (1));
+
+        var pos_regex = new Regex ("\"pos\"\\s*:\\s*\\{(?s).*?\"x\"\\s*:\\s*(-?\\d+)(?s).*?\"y\"\\s*:\\s*(-?\\d+)(?s).*?\\}");
+        if (!pos_regex.match (output_json, 0, out match_info))
+          return false;
+        var x = int.parse (match_info.fetch (1));
+        var y = int.parse (match_info.fetch (2));
+
+        var size_regex = new Regex ("\"size\"\\s*:\\s*\\{(?s).*?\"height\"\\s*:\\s*(\\d+)(?s).*?\"width\"\\s*:\\s*(\\d+)(?s).*?\\}");
+        if (!size_regex.match (tail, 0, out match_info))
+          return false;
+        var height = int.parse (match_info.fetch (1));
+        var width = int.parse (match_info.fetch (2));
+
+        geometry = { x, y, width, height };
+        return true;
+      } catch (RegexError e) {
+        warning ("Unable to parse KDE display layout: %s", e.message);
+      }
+
+      return false;
+    }
+
+    static int find_monitor_number_by_geometry (Gdk.Screen screen, Gdk.Rectangle geometry) {
+      var display = screen.get_display ();
+      int n_monitors = display.get_n_monitors ();
+
       for (int i = 0; i < n_monitors; i++) {
-        if (display.get_monitor (i) == primary_monitor)
+        var monitor = display.get_monitor (i);
+        var monitor_geometry = monitor.get_geometry ();
+        if (monitor_geometry.x == geometry.x
+            && monitor_geometry.y == geometry.y
+            && monitor_geometry.width == geometry.width
+            && monitor_geometry.height == geometry.height)
           return i;
       }
-      return 0; // Fallback to first monitor
+
+      return -1;
     }
 
     void prefs_monitor_changed () {
@@ -1407,6 +1583,42 @@ namespace Plank {
       }
     }
 
+    public Gdk.Rectangle get_menu_anchor_rect (DockItem hovered) {
+      var rect = get_hover_region_for_element (hovered);
+
+      switch (Position) {
+      default:
+      case Gtk.PositionType.BOTTOM:
+        return {
+          rect.x + rect.width / 2,
+          rect.y,
+          1,
+          1,
+        };
+      case Gtk.PositionType.TOP:
+        return {
+          rect.x + rect.width / 2,
+          rect.y + rect.height,
+          1,
+          1,
+        };
+      case Gtk.PositionType.LEFT:
+        return {
+          rect.x + rect.width,
+          rect.y + rect.height / 2,
+          1,
+          1,
+        };
+      case Gtk.PositionType.RIGHT:
+        return {
+          rect.x,
+          rect.y + rect.height / 2,
+          1,
+          1,
+        };
+      }
+    }
+
     /**
      * Get's the x and y position to display a hover window for a dock item.
      *
@@ -1672,6 +1884,14 @@ namespace Plank {
      */
     public Gdk.Rectangle get_dock_window_region () {
       return { win_x, win_y, DockWidth, DockHeight };
+    }
+
+    public Gdk.Rectangle get_monitor_geometry () {
+      return monitor_geo;
+    }
+
+    public unowned Gdk.Monitor? get_target_monitor () {
+      return controller.window.get_screen ().get_display ().get_monitor (monitor_num);
     }
 
     /**

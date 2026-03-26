@@ -70,6 +70,9 @@ namespace Plank {
      * @param position the dock's position
      */
     public void show_at (int x, int y, Gtk.PositionType position) {
+      if (!environment_supports_hover_popups ())
+        return;
+
       unowned Gdk.Display display = get_display ();
       Gdk.Rectangle monitor;
       var monitor_at_point = display.get_monitor_at_point (x, y);
